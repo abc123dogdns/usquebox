@@ -23,21 +23,12 @@ jobs:
       - name: Checkout usquebox
         uses: actions/checkout@v4
 
-      - name: Read usque ref
-        id: usque-ref
-        run: |
-          source usque.ref
-          REPO_SLUG=$(echo "$USQUE_REPO" | sed -E 's#https?://github\.com/##; s#\.git$##')
-          echo "repo=$REPO_SLUG" >> "$GITHUB_OUTPUT"
-          echo "ref=$USQUE_REF" >> "$GITHUB_OUTPUT"
+      - name: Fetch usque source
+        run: bash fetch.sh
 
-      - name: Checkout usque
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.usque-ref.outputs.repo }}
-          ref: ${{ steps.usque-ref.outputs.ref }}
-          path: usque
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Get usque commit
+        id: usque-commit
+        run: echo "ref=$(cd ../usque && git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -107,7 +98,7 @@ jobs:
           body: |
             ## usquebox v${{ inputs.version }}
 
-            **usque**: `${{ steps.usque-ref.outputs.ref }}`
+            **usque**: `${{ steps.usque-commit.outputs.ref }}`
             **Signed**: V1 + V2 + V3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
