@@ -239,8 +239,8 @@ class UsqueVpnService : VpnService() {
         return try {
             val root = JSONObject(json)
             val account = root.optJSONObject("account")
-            val ipv4Addr = account?.optString("ipv4", null)
-            val ipv6Addr = account?.optString("ipv6", null)
+            val ipv4Addr = account?.optString("ipv4")?.ifEmpty { null }
+            val ipv6Addr = account?.optString("ipv6")?.ifEmpty { null }
 
             val inbound = root.optJSONObject("inbound")
             val tunSettings = inbound?.optJSONObject("settings")

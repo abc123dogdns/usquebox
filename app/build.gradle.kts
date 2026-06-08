@@ -32,7 +32,7 @@ android {
         if (hasSigning) {
             create("release") {
                 val ksFile = signEnv("KEYSTORE_FILE")
-                storeFile = if (ksFile.isNotBlank()) file(ksFile) else file("usquebox-release.jks")
+                storeFile = if (ksFile.isNotBlank()) rootProject.file(ksFile) else rootProject.file("usquebox-release.jks")
                 storePassword = signEnv("KEYSTORE_PASS")
                 keyAlias = signEnv("ALIAS_NAME")
                 keyPassword = signEnv("ALIAS_PASS")
