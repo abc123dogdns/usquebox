@@ -1,0 +1,24 @@
+*.iml
+.gradle
+.kotlin
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Build outputs
+/app/build
+/app/libs/*.aar
+/app/libs/*.jar
+
+# Signing (never commit secrets)
+*.jks
+*.keystore
+keystore.properties
+
+# Kept in repo for reproducible builds
+!usque.ref

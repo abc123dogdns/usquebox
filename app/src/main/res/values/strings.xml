@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">UsqueBox</string>
+    <string name="notification_channel_name">VPN Tunnel</string>
+    <string name="notification_title">UsqueBox VPN</string>
+    <string name="notification_connected">Tunnel connected</string>
+    <string name="notification_connecting">Connecting…</string>
+    <string name="notification_reconnecting">Reconnecting…</string>
+    <string name="state_stopped">Disconnected</string>
+    <string name="state_connecting">Connecting</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_reconnecting">Reconnecting</string>
+    <string name="state_error">Error</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="config">Configuration</string>
+    <string name="import_config">Import Config</string>
+    <string name="paste_json">Paste JSON config</string>
+    <string name="save">Save</string>
+    <string name="no_config">No configuration set</string>
+    <string name="traffic_sent">Sent</string>
+    <string name="traffic_recv">Received</string>
+    <string name="uptime">Uptime</string>
+</resources>

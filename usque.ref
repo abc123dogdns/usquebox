@@ -1,0 +1,5 @@
+# usque source reference
+# Pin to a specific commit, tag, or branch from the remote repo.
+# Update this file to bump the usque version used in builds.
+USQUE_REPO=https://github.com/justinwoo280/usque.git
+USQUE_REF=c8a3195
