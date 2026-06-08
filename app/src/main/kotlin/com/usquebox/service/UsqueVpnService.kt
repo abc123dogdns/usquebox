@@ -18,16 +18,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import mobile.Mobile
 import mobile.TunnelListener
+import android.system.Os
+import android.system.OsConstants
 import org.json.JSONObject
 import java.io.FileDescriptor
-import java.lang.reflect.Field
-import java.net.DatagramSocket
 
 class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
     private var tunFd: Int = -1
-    private var udpSocket: DatagramSocket? = null
+    private var udpFd: Int = -1
 
     override fun onCreate() {
         super.onCreate()
@@ -129,10 +129,12 @@ class UsqueVpnService : VpnService() {
         }
         tunFd = pfd.fd
 
-        val socket = DatagramSocket()
-        protect(socket)
-        udpSocket = socket
-        val udpFd = getSocketFd(socket)
+        val socketFd = Os.socket(OsConstants.AF_INET, OsConstants.SOCK_DGRAM, 0)
+        val fdIntField = FileDescriptor::class.java.getDeclaredField("fd")
+        fdIntField.isAccessible = true
+        val rawFd = fdIntField.getInt(socketFd)
+        protect(rawFd)
+        udpFd = rawFd
 
         val listener = object : TunnelListener {
             override fun onStateChange(state: String?) {
@@ -177,8 +179,16 @@ class UsqueVpnService : VpnService() {
             Mobile.stopTunnel()
             Mobile.unregisterListener()
         } catch (_: Exception) {}
-        udpSocket?.close()
-        udpSocket = null
+        if (udpFd >= 0) {
+            try {
+                val fdObj = FileDescriptor()
+                val fdField = FileDescriptor::class.java.getDeclaredField("fd")
+                fdField.isAccessible = true
+                fdField.setInt(fdObj, udpFd)
+                Os.close(fdObj)
+            } catch (_: Exception) {}
+            udpFd = -1
+        }
         if (tunFd >= 0) {
             try {
                 android.os.ParcelFileDescriptor.adoptFd(tunFd).close()
@@ -211,19 +221,6 @@ class UsqueVpnService : VpnService() {
         }
         val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(stateRes))
-    }
-
-    private fun getSocketFd(socket: DatagramSocket): Int {
-        val implField = DatagramSocket::class.java.getDeclaredField("impl")
-        implField.isAccessible = true
-        val impl = implField.get(socket)
-        val fdField = impl.javaClass.superclass?.getDeclaredField("fd")
-            ?: throw NoSuchFieldException("fd field not found on socket impl")
-        fdField.isAccessible = true
-        val fd = fdField.get(impl) as FileDescriptor
-        val fdIntField: Field = FileDescriptor::class.java.getDeclaredField("fd")
-        fdIntField.isAccessible = true
-        return fdIntField.getInt(fd)
     }
 
     private data class VpnConfig(
