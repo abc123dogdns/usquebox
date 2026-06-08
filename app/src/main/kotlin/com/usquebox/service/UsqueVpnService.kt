@@ -18,16 +18,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import mobile.Mobile
 import mobile.TunnelListener
-import android.system.Os
-import android.system.OsConstants
 import org.json.JSONObject
-import java.io.FileDescriptor
 
 class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
     private var tunFd: Int = -1
-    private var udpFd: Int = -1
+    private var udpFd: Long = -1
 
     override fun onCreate() {
         super.onCreate()
@@ -129,12 +126,13 @@ class UsqueVpnService : VpnService() {
         }
         tunFd = pfd.fd
 
-        val socketFd = Os.socket(OsConstants.AF_INET, OsConstants.SOCK_DGRAM, 0)
-        val fdIntField = FileDescriptor::class.java.getDeclaredField("fd")
-        fdIntField.isAccessible = true
-        val rawFd = fdIntField.getInt(socketFd)
-        protect(rawFd)
-        udpFd = rawFd
+        udpFd = Mobile.createUDPSocket()
+        if (udpFd < 0) {
+            _tunnelState.value = TunnelState.Error("Failed to create UDP socket")
+            stopSelf()
+            return
+        }
+        protect(udpFd.toInt())
 
         val listener = object : TunnelListener {
             override fun onStateChange(state: String?) {
@@ -161,7 +159,7 @@ class UsqueVpnService : VpnService() {
         }
 
         Mobile.registerListener(listener)
-        val err = Mobile.startTunnel(tunFd.toLong(), udpFd.toLong(), configJson)
+        val err = Mobile.startTunnel(tunFd.toLong(), udpFd, configJson)
         if (err.isNotEmpty()) {
             Mobile.unregisterListener()
             _tunnelState.value = TunnelState.Error(err)
@@ -180,13 +178,7 @@ class UsqueVpnService : VpnService() {
             Mobile.unregisterListener()
         } catch (_: Exception) {}
         if (udpFd >= 0) {
-            try {
-                val fdObj = FileDescriptor()
-                val fdField = FileDescriptor::class.java.getDeclaredField("fd")
-                fdField.isAccessible = true
-                fdField.setInt(fdObj, udpFd)
-                Os.close(fdObj)
-            } catch (_: Exception) {}
+            Mobile.closeSocket(udpFd)
             udpFd = -1
         }
         if (tunFd >= 0) {
