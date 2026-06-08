@@ -27,7 +27,8 @@ jobs:
         id: usque-ref
         run: |
           source usque.ref
-          echo "repo=$USQUE_REPO" >> "$GITHUB_OUTPUT"
+          REPO_SLUG=$(echo "$USQUE_REPO" | sed -E 's#https?://github\.com/##; s#\.git$##')
+          echo "repo=$REPO_SLUG" >> "$GITHUB_OUTPUT"
           echo "ref=$USQUE_REF" >> "$GITHUB_OUTPUT"
 
       - name: Checkout usque
