@@ -23,6 +23,7 @@ import org.json.JSONObject
 class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
+    private var tunPfd: android.os.ParcelFileDescriptor? = null
     private var tunFd: Int = -1
     private var udpFd: Long = -1
 
@@ -118,17 +119,23 @@ class UsqueVpnService : VpnService() {
             }
         }
 
+        tunPfd?.close()
         val pfd = builder.establish()
         if (pfd == null) {
             _tunnelState.value = TunnelState.Error("Failed to establish VPN interface")
             stopSelf()
             return
         }
+        tunPfd = pfd
         tunFd = pfd.fd
 
+        if (udpFd >= 0) {
+            Mobile.closeSocket(udpFd)
+        }
         udpFd = Mobile.createUDPSocket()
         if (udpFd < 0) {
             _tunnelState.value = TunnelState.Error("Failed to create UDP socket")
+            stopTunnelInternal()
             stopSelf()
             return
         }
@@ -163,6 +170,7 @@ class UsqueVpnService : VpnService() {
         if (err.isNotEmpty()) {
             Mobile.unregisterListener()
             _tunnelState.value = TunnelState.Error(err)
+            stopTunnelInternal()
             stopSelf()
         }
     }
@@ -181,12 +189,11 @@ class UsqueVpnService : VpnService() {
             Mobile.closeSocket(udpFd)
             udpFd = -1
         }
-        if (tunFd >= 0) {
-            try {
-                android.os.ParcelFileDescriptor.adoptFd(tunFd).close()
-            } catch (_: Exception) {}
-            tunFd = -1
-        }
+        try {
+            tunPfd?.close()
+        } catch (_: Exception) {}
+        tunPfd = null
+        tunFd = -1
         _tunnelState.value = TunnelState.Stopped
     }
 
