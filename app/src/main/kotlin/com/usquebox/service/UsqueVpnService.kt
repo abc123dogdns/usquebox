@@ -13,9 +13,15 @@ import com.usquebox.R
 import com.usquebox.UsqueBoxApp
 import com.usquebox.data.ConfigStore
 import com.usquebox.data.ProxyMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import mobile.Mobile
 import mobile.TunnelListener
 import org.json.JSONObject
@@ -23,6 +29,7 @@ import org.json.JSONObject
 class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tunPfd: android.os.ParcelFileDescriptor? = null
     private var tunFd: Int = -1
     private var udpFd: Long = -1
@@ -45,12 +52,14 @@ class UsqueVpnService : VpnService() {
 
     override fun onDestroy() {
         stopTunnelInternal()
+        serviceScope.cancel()
         instance = null
         super.onDestroy()
     }
 
     override fun onRevoke() {
         stopTunnelInternal()
+        serviceScope.cancel()
         stopSelf()
     }
 
@@ -89,32 +98,41 @@ class UsqueVpnService : VpnService() {
             builder.addDnsServer(dns)
         }
 
-        // Per-app proxy: always exclude self to prevent VPN loops
+        // Per-app proxy: configure app routing on the VPN builder
         val selfPkg = packageName
-        builder.addDisallowedApplication(selfPkg)
-
         val proxyMode = configStore.proxyMode
         val selectedApps = configStore.selectedApps
         when (proxyMode) {
             ProxyMode.BYPASS -> {
                 // Blacklist: proxy everything EXCEPT selected apps
+                val disallowed = mutableSetOf(selfPkg)
                 for (pkg in selectedApps) {
-                    if (pkg != selfPkg) {
-                        builder.addDisallowedApplication(pkg)
-                    }
+                    disallowed.add(pkg)
                 }
-                Log.d(TAG, "Per-app BYPASS: ${selectedApps.size} apps excluded")
+                for (pkg in disallowed) {
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                    } catch (_: Exception) {}
+                }
+                Log.d(TAG, "Per-app BYPASS: ${disallowed.size} apps excluded")
             }
             ProxyMode.PROXY_ONLY -> {
                 // Whitelist: ONLY proxy selected apps
+                // Do NOT call addDisallowedApplication here — Android 14+ Builder
+                // treats allowed/disallowed as mutually exclusive modes.
+                // VpnService.protect() on the MASQUE UDP socket is sufficient
+                // to prevent VPN routing loops for our own traffic.
                 for (pkg in selectedApps) {
                     if (pkg != selfPkg) {
-                        builder.addAllowedApplication(pkg)
+                        try {
+                            builder.addAllowedApplication(pkg)
+                        } catch (_: Exception) {}
                     }
                 }
                 Log.d(TAG, "Per-app PROXY_ONLY: ${selectedApps.size} apps included")
             }
             ProxyMode.GLOBAL -> {
+                builder.addDisallowedApplication(selfPkg)
                 Log.d(TAG, "Global mode: all traffic proxied")
             }
         }
@@ -176,8 +194,12 @@ class UsqueVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
-        stopTunnelInternal()
+        _tunnelState.value = TunnelState.Stopped
+        updateNotification()
         stopSelf()
+        serviceScope.launch {
+            stopTunnelInternal()
+        }
     }
 
     private fun stopTunnelInternal() {
