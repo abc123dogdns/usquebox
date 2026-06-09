@@ -30,6 +30,7 @@ class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var stopJob: Job? = null
     private var tunPfd: android.os.ParcelFileDescriptor? = null
     private var tunFd: Int = -1
     private var udpFd: Long = -1
@@ -42,7 +43,17 @@ class UsqueVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_CONNECT -> startTunnel()
+            ACTION_CONNECT -> {
+                val pending = stopJob
+                if (pending != null && pending.isActive) {
+                    serviceScope.launch {
+                        pending.join()
+                        startTunnel()
+                    }
+                } else {
+                    startTunnel()
+                }
+            }
             ACTION_DISCONNECT -> stopTunnel()
         }
         return START_NOT_STICKY
@@ -197,7 +208,7 @@ class UsqueVpnService : VpnService() {
         _tunnelState.value = TunnelState.Stopped
         updateNotification()
         stopSelf()
-        serviceScope.launch {
+        stopJob = serviceScope.launch {
             stopTunnelInternal()
         }
     }
