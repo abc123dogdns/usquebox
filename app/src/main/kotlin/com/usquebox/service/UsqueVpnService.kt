@@ -15,13 +15,11 @@ import com.usquebox.data.ConfigStore
 import com.usquebox.data.ProxyMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import mobile.Mobile
 import mobile.TunnelListener
 import org.json.JSONObject
@@ -30,7 +28,7 @@ class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var stopJob: Job? = null
+    private var tunnelStopped = false
     private var tunPfd: android.os.ParcelFileDescriptor? = null
     private var tunFd: Int = -1
     private var udpFd: Long = -1
@@ -43,17 +41,7 @@ class UsqueVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_CONNECT -> {
-                val pending = stopJob
-                if (pending != null && pending.isActive) {
-                    serviceScope.launch {
-                        pending.join()
-                        startTunnel()
-                    }
-                } else {
-                    startTunnel()
-                }
-            }
+            ACTION_CONNECT -> startTunnel()
             ACTION_DISCONNECT -> stopTunnel()
         }
         return START_NOT_STICKY
@@ -62,16 +50,21 @@ class UsqueVpnService : VpnService() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        stopTunnelInternal()
+        if (!tunnelStopped) {
+            tunnelStopped = true
+            stopTunnelInternal()
+        }
         serviceScope.cancel()
         instance = null
         super.onDestroy()
     }
 
     override fun onRevoke() {
-        stopTunnelInternal()
+        if (!tunnelStopped) {
+            tunnelStopped = true
+            stopTunnelInternal()
+        }
         serviceScope.cancel()
-        stopSelf()
     }
 
     private fun startTunnel() {
@@ -205,12 +198,12 @@ class UsqueVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        if (tunnelStopped) return
+        tunnelStopped = true
         _tunnelState.value = TunnelState.Stopped
         updateNotification()
+        stopTunnelInternal()
         stopSelf()
-        stopJob = serviceScope.launch {
-            stopTunnelInternal()
-        }
     }
 
     private fun stopTunnelInternal() {
