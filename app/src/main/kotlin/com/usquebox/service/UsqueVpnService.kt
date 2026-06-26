@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
@@ -144,7 +145,12 @@ class UsqueVpnService : VpnService() {
             }
         }
 
+        // Clean up any leftover PFD from a failed prior attempt that never got
+        // handed to the Go engine. In the normal stop path tunPfd is already
+        // detached (nulled) by snapshotAndClearFds, so this is a no-op then;
+        // the TUN fd is owned and closed by Go, never by us once started.
         tunPfd?.close()
+        tunPfd = null
         val pfd = builder.establish()
         if (pfd == null) {
             _tunnelState.value = TunnelState.Error("Failed to establish VPN interface")
@@ -210,16 +216,31 @@ class UsqueVpnService : VpnService() {
     }
 
     /**
-     * Snapshot and reset the tunnel fds/PFD so any subsequent teardown sees
-     * cleared state, and returns the captured handles for off-main cleanup.
+     * Snapshot and reset the tunnel fds so any subsequent teardown sees cleared
+     * state, and returns the captured UDP fd for Kotlin-side cleanup.
+     *
+     * NOTE on fd ownership:
+     *  - The TUN fd is handed to Go via StartTunnel and owned by the Go engine
+     *    (FdAdapter.Close closes it inside StopTunnel). Kotlin MUST NOT close
+     *    tunPfd — double-closing a released fd can silently close an unrelated
+     *    socket (fd reuse disaster). We detach it here.
+     *  - The UDP fd is created by Kotlin (createUDPSocket) and merely borrowed
+     *    by Go (MaintainTunnel never closes a caller-supplied UDPConn), so
+     *    Kotlin owns and closes it.
+     *
+     * @Synchronized guards against concurrent teardown entry (e.g. user-initiated
+     * disconnect racing a system onRevoke) so two threads can't both snapshot a
+     * non-null fd and double-close.
      */
+    @Synchronized
     private fun snapshotAndClearFds(): FdSnapshot {
-        val fdToClose = udpFd
+        val udpFdToClose = udpFd
         udpFd = -1
-        val pfdToClose = tunPfd
+        // Detach the TUN PFD from Kotlin ownership; Go's StopTunnel closes the
+        // underlying fd. We only null our reference here, never close it.
         tunPfd = null
         tunFd = -1
-        return FdSnapshot(fdToClose, pfdToClose)
+        return FdSnapshot(udpFdToClose)
     }
 
     private fun teardownGoEngine(snap: FdSnapshot) {
@@ -229,22 +250,19 @@ class UsqueVpnService : VpnService() {
         try {
             Mobile.unregisterListener()
         } catch (_: Exception) {}
+        // Only the UDP fd is Kotlin-owned; the TUN fd is closed by Go above.
         if (snap.udpFd >= 0) {
             try {
                 Mobile.closeSocket(snap.udpFd)
             } catch (_: Exception) {}
         }
-        try {
-            snap.tunPfd?.close()
-        } catch (_: Exception) {}
         _tunnelState.value = TunnelState.Stopped
     }
 
     /**
-     * Runs the blocking teardown (Mobile.stopTunnel, fd/PFD close) on the IO
+     * Runs the blocking teardown (Mobile.stopTunnel, UDP fd close) on the IO
      * dispatcher. Mobile.stopTunnel blocks until the Go engine fully exits;
-     * running it on the main thread triggers ANR/crash on disconnect and on
-     * lifecycle callbacks (onDestroy/onRevoke).
+     * running it on the main thread risks ANR.
      */
     private fun stopTunnelInternalAsync() {
         val snap = snapshotAndClearFds()
@@ -257,19 +275,24 @@ class UsqueVpnService : VpnService() {
 
     /**
      * Same teardown as the async variant but waits for completion. Used by
-     * onDestroy/onRevoke, which MUST release the Go engine and fds before the
-     * process tears down — an unawaited async launch can be cancelled by the
-     * subsequent serviceScope.cancel(), leaking the Go goroutine and fds.
-     * With the Go-side stop fix this completes in milliseconds.
+     * onDestroy/onRevoke (invoked on the main and Binder threads respectively),
+     * which MUST release the Go engine and UDP fd before the process tears
+     * down — an unawaited async launch can be cancelled by the subsequent
+     * serviceScope.cancel(), leaking the Go goroutine and the UDP fd.
+     *
+     * Bounded by [STOP_TIMEOUT] so that even an unexpected Go-side stall cannot
+     * hold the lifecycle callback long enough to trigger an ANR/SIGKILL.
      */
     private fun stopTunnelInternalBlocking() {
         val snap = snapshotAndClearFds()
         runBlocking {
-            withContext(Dispatchers.IO) { teardownGoEngine(snap) }
+            withTimeoutOrNull(STOP_TIMEOUT) {
+                withContext(Dispatchers.IO) { teardownGoEngine(snap) }
+            } ?: Log.w(TAG, "Tunnel stop timed out after ${STOP_TIMEOUT}ms; continuing teardown")
         }
     }
 
-    private data class FdSnapshot(val udpFd: Long, val tunPfd: android.os.ParcelFileDescriptor?)
+    private data class FdSnapshot(val udpFd: Long)
 
     private fun buildNotification(stateRes: Int): Notification {
         val pendingIntent = PendingIntent.getActivity(
@@ -353,6 +376,10 @@ class UsqueVpnService : VpnService() {
     companion object {
         private const val TAG = "UsqueVpnService"
         private const val NOTIFICATION_ID = 1
+        // Upper bound for the blocking stop in lifecycle callbacks. The Go-side
+        // stop completes in milliseconds; this only guards against an unexpected
+        // stall so onDestroy/onRevoke can't ANR or get SIGKILL'd.
+        private const val STOP_TIMEOUT = 5_000L
         const val ACTION_CONNECT = "com.usquebox.CONNECT"
         const val ACTION_DISCONNECT = "com.usquebox.DISCONNECT"
 
