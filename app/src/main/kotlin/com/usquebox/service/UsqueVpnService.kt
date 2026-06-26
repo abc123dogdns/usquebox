@@ -17,7 +17,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import mobile.Mobile
@@ -52,7 +55,7 @@ class UsqueVpnService : VpnService() {
     override fun onDestroy() {
         if (!tunnelStopped) {
             tunnelStopped = true
-            stopTunnelInternal()
+            stopTunnelInternalBlocking()
         }
         serviceScope.cancel()
         instance = null
@@ -62,7 +65,7 @@ class UsqueVpnService : VpnService() {
     override fun onRevoke() {
         if (!tunnelStopped) {
             tunnelStopped = true
-            stopTunnelInternal()
+            stopTunnelInternalBlocking()
         }
         serviceScope.cancel()
     }
@@ -157,7 +160,7 @@ class UsqueVpnService : VpnService() {
         udpFd = Mobile.createUDPSocket()
         if (udpFd < 0) {
             _tunnelState.value = TunnelState.Error("Failed to create UDP socket")
-            stopTunnelInternal()
+            stopTunnelInternalAsync()
             stopSelf()
             return
         }
@@ -192,7 +195,7 @@ class UsqueVpnService : VpnService() {
         if (err.isNotEmpty()) {
             Mobile.unregisterListener()
             _tunnelState.value = TunnelState.Error(err)
-            stopTunnelInternal()
+            stopTunnelInternalAsync()
             stopSelf()
         }
     }
@@ -202,26 +205,71 @@ class UsqueVpnService : VpnService() {
         tunnelStopped = true
         _tunnelState.value = TunnelState.Stopped
         updateNotification()
-        stopTunnelInternal()
+        stopTunnelInternalAsync()
         stopSelf()
     }
 
-    private fun stopTunnelInternal() {
-        try {
-            Mobile.stopTunnel()
-            Mobile.unregisterListener()
-        } catch (_: Exception) {}
-        if (udpFd >= 0) {
-            Mobile.closeSocket(udpFd)
-            udpFd = -1
-        }
-        try {
-            tunPfd?.close()
-        } catch (_: Exception) {}
+    /**
+     * Snapshot and reset the tunnel fds/PFD so any subsequent teardown sees
+     * cleared state, and returns the captured handles for off-main cleanup.
+     */
+    private fun snapshotAndClearFds(): FdSnapshot {
+        val fdToClose = udpFd
+        udpFd = -1
+        val pfdToClose = tunPfd
         tunPfd = null
         tunFd = -1
+        return FdSnapshot(fdToClose, pfdToClose)
+    }
+
+    private fun teardownGoEngine(snap: FdSnapshot) {
+        try {
+            Mobile.stopTunnel()
+        } catch (_: Exception) {}
+        try {
+            Mobile.unregisterListener()
+        } catch (_: Exception) {}
+        if (snap.udpFd >= 0) {
+            try {
+                Mobile.closeSocket(snap.udpFd)
+            } catch (_: Exception) {}
+        }
+        try {
+            snap.tunPfd?.close()
+        } catch (_: Exception) {}
         _tunnelState.value = TunnelState.Stopped
     }
+
+    /**
+     * Runs the blocking teardown (Mobile.stopTunnel, fd/PFD close) on the IO
+     * dispatcher. Mobile.stopTunnel blocks until the Go engine fully exits;
+     * running it on the main thread triggers ANR/crash on disconnect and on
+     * lifecycle callbacks (onDestroy/onRevoke).
+     */
+    private fun stopTunnelInternalAsync() {
+        val snap = snapshotAndClearFds()
+        try {
+            serviceScope.launch { teardownGoEngine(snap) }
+        } catch (_: Exception) {
+            teardownGoEngine(snap)
+        }
+    }
+
+    /**
+     * Same teardown as the async variant but waits for completion. Used by
+     * onDestroy/onRevoke, which MUST release the Go engine and fds before the
+     * process tears down — an unawaited async launch can be cancelled by the
+     * subsequent serviceScope.cancel(), leaking the Go goroutine and fds.
+     * With the Go-side stop fix this completes in milliseconds.
+     */
+    private fun stopTunnelInternalBlocking() {
+        val snap = snapshotAndClearFds()
+        runBlocking {
+            withContext(Dispatchers.IO) { teardownGoEngine(snap) }
+        }
+    }
+
+    private data class FdSnapshot(val udpFd: Long, val tunPfd: android.os.ParcelFileDescriptor?)
 
     private fun buildNotification(stateRes: Int): Notification {
         val pendingIntent = PendingIntent.getActivity(
