@@ -237,7 +237,12 @@ class UsqueVpnService : VpnService() {
         val udpFdToClose = udpFd
         udpFd = -1
         // Detach the TUN PFD from Kotlin ownership; Go's StopTunnel closes the
-        // underlying fd. We only null our reference here, never close it.
+        // underlying fd via FdAdapter.Close (raw close(2)). detachFd() drops the
+        // ParcelFileDescriptor's fdsan ownership tag so Go's raw close doesn't
+        // leave a stale owner record that trips fdsan when the fd number is
+        // later reused. After this the PFD no longer owns/closes the fd; we must
+        // never close it from Kotlin — only null our reference.
+        tunPfd?.detachFd()
         tunPfd = null
         tunFd = -1
         return FdSnapshot(udpFdToClose)
