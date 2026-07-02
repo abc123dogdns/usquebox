@@ -32,7 +32,9 @@ class UsqueVpnService : VpnService() {
 
     private lateinit var configStore: ConfigStore
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var tunnelStopped = false
+    // Written/read from multiple threads (main, Binder for onRevoke, IO). Volatile
+    // for visibility; the actual stop is idempotent-guarded in stopIfRunning().
+    @Volatile private var tunnelStopped = false
     private var tunPfd: android.os.ParcelFileDescriptor? = null
     private var tunFd: Int = -1
     private var udpFd: Long = -1
@@ -40,6 +42,9 @@ class UsqueVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         configStore = ConfigStore(this)
+        // Register this instance as the current one. If a previous instance is
+        // still tearing down, its onDestroy will only clear `instance` if it is
+        // still itself (see onDestroy), so we won't be clobbered.
         instance = this
     }
 
@@ -54,21 +59,43 @@ class UsqueVpnService : VpnService() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        if (!tunnelStopped) {
-            tunnelStopped = true
-            stopTunnelInternalBlocking()
-        }
+        stopIfRunning(blocking = true)
         serviceScope.cancel()
-        instance = null
+        // Only clear the shared `instance` if we are still the current one. A
+        // fast disconnect→reconnect can create a new service whose onCreate set
+        // `instance = newService` while this (old) instance is being destroyed;
+        // clearing unconditionally would null out the live new service.
+        clearInstanceIfSelf()
         super.onDestroy()
     }
 
     override fun onRevoke() {
-        if (!tunnelStopped) {
-            tunnelStopped = true
-            stopTunnelInternalBlocking()
-        }
+        stopIfRunning(blocking = true)
         serviceScope.cancel()
+        clearInstanceIfSelf()
+    }
+
+    /**
+     * Idempotent, thread-safe stop entry. Guards against concurrent callers
+     * (user disconnect on main thread racing system onRevoke on the Binder
+     * thread, or onDestroy). Only the first caller runs the teardown.
+     */
+    @Synchronized
+    private fun stopIfRunning(blocking: Boolean) {
+        if (tunnelStopped) return
+        tunnelStopped = true
+        if (blocking) {
+            stopTunnelInternalBlocking()
+        } else {
+            stopTunnelInternalAsync()
+        }
+    }
+
+    @Synchronized
+    private fun clearInstanceIfSelf() {
+        if (instance === this) {
+            instance = null
+        }
     }
 
     private fun startTunnel() {
@@ -207,11 +234,12 @@ class UsqueVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
-        if (tunnelStopped) return
-        tunnelStopped = true
+        // stopIfRunning is idempotent and thread-safe; it no-ops if a teardown
+        // (e.g. onRevoke) already started. Update UI state only on the first
+        // successful transition is not critical here, so set it regardless.
         _tunnelState.value = TunnelState.Stopped
         updateNotification()
-        stopTunnelInternalAsync()
+        stopIfRunning(blocking = false)
         stopSelf()
     }
 
