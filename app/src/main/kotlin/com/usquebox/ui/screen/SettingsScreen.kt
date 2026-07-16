@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,6 +114,8 @@ fun SettingsScreen(
     var jwtToken by remember { mutableStateOf("") }
     var deviceName by remember { mutableStateOf("") }
 
+    var initialized by remember { mutableStateOf(false) }
+
     fun parseNoise(json: JSONObject, key: String): NoiseConfig {
         val n = json.optJSONObject(key) ?: return NoiseConfig()
         return NoiseConfig(
@@ -158,6 +161,13 @@ fun SettingsScreen(
                 tunIPv6 = tun.optBoolean("ipv6", true)
             }
         } catch (_: Exception) {}
+    }
+
+    LaunchedEffect(currentConfig) {
+        if (!initialized && !currentConfig.isNullOrBlank()) {
+            loadFromJson(currentConfig)
+            initialized = true
+        }
     }
 
     fun buildConfigJson(): String? {
