@@ -118,15 +118,38 @@ class UsqueVpnService : VpnService() {
 
         val builder = Builder().setMtu(parsed.mtu).setSession("UsqueBox")
 
+        // Unified black-hole model for disabled stacks:
+        //
+        // Route BOTH families' default routes into the TUN regardless of which
+        // stacks are enabled, but only assign an address to enabled stacks.
+        // A disabled stack's packets are therefore pulled into the TUN (never
+        // escaping to the physical interface) and dropped by the Go engine at
+        // the tunnel ingress (BlockIPv4/BlockIPv6, derived from the same
+        // inbound.settings.ipv4/ipv6 the config carries).
+        //
+        // We deliberately do NOT call allowFamily(): calling it for one family
+        // switches the VPN into an allow-list mode that EXCLUDES the other
+        // family from the VPN, routing it out the underlying network — the
+        // exact IPv4/IPv6 leak we are fixing. Omitting allowFamily keeps all
+        // families subject to the routes above.
         if (parsed.enableIPv4 && parsed.ipv4Address != null) {
             builder.addAddress(parsed.ipv4Address, 32)
-            builder.addRoute("0.0.0.0", 0)
-            builder.allowFamily(android.system.OsConstants.AF_INET)
         }
         if (parsed.enableIPv6 && parsed.ipv6Address != null) {
             builder.addAddress(parsed.ipv6Address, 128)
+        }
+        // Default routes for both families (black-hole the disabled one via Go).
+        // Some Android versions reject an IPvX route when no IPvX address is
+        // assigned; guard each so a disabled stack's route can't abort establish.
+        try {
+            builder.addRoute("0.0.0.0", 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "addRoute IPv4 default failed: ${e.message}")
+        }
+        try {
             builder.addRoute("::", 0)
-            builder.allowFamily(android.system.OsConstants.AF_INET6)
+        } catch (e: Exception) {
+            Log.w(TAG, "addRoute IPv6 default failed: ${e.message}")
         }
 
         for (dns in parsed.dnsServers) {
