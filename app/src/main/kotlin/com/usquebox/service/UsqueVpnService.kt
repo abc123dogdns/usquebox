@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import mobile.Mobile
 import mobile.TunnelListener
 import org.json.JSONObject
@@ -38,6 +40,10 @@ class UsqueVpnService : VpnService() {
     private var tunPfd: android.os.ParcelFileDescriptor? = null
     private var tunFd: Int = -1
     private var udpFd: Long = -1
+    private var trafficJob: Job? = null
+    private var lastSent: Long = 0
+    private var lastRecv: Long = 0
+    private var lastTrafficTime: Long = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -84,6 +90,7 @@ class UsqueVpnService : VpnService() {
     private fun stopIfRunning(blocking: Boolean) {
         if (tunnelStopped) return
         tunnelStopped = true
+        stopTrafficUpdates()
         if (blocking) {
             stopTunnelInternalBlocking()
         } else {
@@ -105,7 +112,7 @@ class UsqueVpnService : VpnService() {
             return
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification(R.string.notification_connecting))
+        startForeground(NOTIFICATION_ID, buildNotification(getString(R.string.notification_connecting)))
 
         _tunnelState.value = TunnelState.Connecting
 
@@ -234,6 +241,10 @@ class UsqueVpnService : VpnService() {
                     else -> _tunnelState.value
                 }
                 updateNotification()
+                if (state == "stopped" || state == "error") {
+                    stopTrafficUpdates()
+                    stopSelf()
+                }
             }
 
             override fun onTraffic(sent: Long, recv: Long) {
@@ -253,6 +264,8 @@ class UsqueVpnService : VpnService() {
             _tunnelState.value = TunnelState.Error(err)
             stopTunnelInternalAsync()
             stopSelf()
+        } else {
+            startTrafficUpdates()
         }
     }
 
@@ -350,7 +363,7 @@ class UsqueVpnService : VpnService() {
 
     private data class FdSnapshot(val udpFd: Long)
 
-    private fun buildNotification(stateRes: Int): Notification {
+    private fun buildNotification(contentText: String): Notification {
         val pendingIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -358,7 +371,7 @@ class UsqueVpnService : VpnService() {
         )
         return NotificationCompat.Builder(this, UsqueBoxApp.CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(stateRes))
+            .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -366,13 +379,62 @@ class UsqueVpnService : VpnService() {
     }
 
     private fun updateNotification() {
-        val stateRes = when (_tunnelState.value) {
-            is TunnelState.Connected -> R.string.notification_connected
-            is TunnelState.Reconnecting -> R.string.notification_reconnecting
-            else -> R.string.notification_connecting
+        val contentText = when (val state = _tunnelState.value) {
+            is TunnelState.Connected -> {
+                val rateText = "↑ ${formatRate(state.rateSent)}  ↓ ${formatRate(state.rateRecv)}"
+                getString(R.string.notification_connected) + " · " + rateText
+            }
+            is TunnelState.Reconnecting -> getString(R.string.notification_reconnecting)
+            is TunnelState.Connecting -> getString(R.string.notification_connecting)
+            is TunnelState.Stopped -> getString(R.string.notification_disconnected)
+            is TunnelState.Error -> getString(R.string.notification_error)
         }
         val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(NOTIFICATION_ID, buildNotification(stateRes))
+        manager.notify(NOTIFICATION_ID, buildNotification(contentText))
+    }
+
+    private fun startTrafficUpdates() {
+        trafficJob?.cancel()
+        lastSent = 0
+        lastRecv = 0
+        lastTrafficTime = System.currentTimeMillis()
+        trafficJob = serviceScope.launch {
+            while (true) {
+                delay(1000)
+                updateTrafficRate()
+            }
+        }
+    }
+
+    private fun stopTrafficUpdates() {
+        trafficJob?.cancel()
+        trafficJob = null
+    }
+
+    private fun updateTrafficRate() {
+        val current = _tunnelState.value
+        if (current !is TunnelState.Connected) return
+        val now = System.currentTimeMillis()
+        val dt = (now - lastTrafficTime) / 1000.0
+        lastTrafficTime = now
+
+        val dSent = (current.bytesSent - lastSent).coerceAtLeast(0)
+        val dRecv = (current.bytesRecv - lastRecv).coerceAtLeast(0)
+        lastSent = current.bytesSent
+        lastRecv = current.bytesRecv
+
+        val rateSent = if (dt > 0) (dSent / dt).toLong() else 0
+        val rateRecv = if (dt > 0) (dRecv / dt).toLong() else 0
+
+        _tunnelState.value = current.copy(rateSent = rateSent, rateRecv = rateRecv)
+        updateNotification()
+    }
+
+    private fun formatRate(bytesPerSec: Long): String = when {
+        bytesPerSec < 1024 -> "$bytesPerSec B/s"
+        bytesPerSec < 1024 * 1024 -> "%.1f KB/s".format(bytesPerSec / 1024.0)
+        bytesPerSec < 1024 * 1024 * 1024 -> "%.1f MB/s".format(bytesPerSec / (1024.0 * 1024))
+        else -> "%.2f GB/s".format(bytesPerSec / (1024.0 * 1024 * 1024))
     }
 
     private data class VpnConfig(
@@ -452,7 +514,9 @@ sealed class TunnelState {
     data object Connecting : TunnelState()
     data class Connected(
         val bytesSent: Long = 0,
-        val bytesRecv: Long = 0
+        val bytesRecv: Long = 0,
+        val rateSent: Long = 0,
+        val rateRecv: Long = 0
     ) : TunnelState()
     data class Reconnecting(
         val bytesSent: Long = 0,
