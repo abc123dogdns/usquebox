@@ -27,6 +27,13 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
+VERSION_MAP="$SCRIPT_DIR/version.map"
+LDFLAGS="-s -w"
+if [ -f "$VERSION_MAP" ]; then
+    LDFLAGS="$LDFLAGS -extldflags=-Wl,--version-script=$VERSION_MAP"
+    echo "    version script: $VERSION_MAP"
+fi
+
 echo "==> Building usque AAR..."
 echo "    source:  $USQUE_DIR ($(cd "$USQUE_DIR" && git rev-parse --short HEAD))"
 echo "    target:  android/arm64 (API 24)"
@@ -37,7 +44,7 @@ cd "$USQUE_DIR"
 gomobile bind \
     -target=android/arm64 \
     -androidapi 24 \
-    -ldflags="-s -w" \
+    -ldflags="$LDFLAGS" \
     -o "$OUTPUT_DIR/usque.aar" \
     ./mobile
 

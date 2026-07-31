@@ -1,0 +1,18 @@
+{
+  global:
+    Java_*;
+    main.main;
+    x_cgo_*;
+    crosscall2;
+    x_crosscall2_ptr;
+    _cgo_wait_runtime_init_done;
+    _cgo_sys_thread_start;
+    _cgo_topofstack;
+    _cgo_yield;
+    _cgo_panic;
+    _cgo_set_stacklo;
+    DestroyRef;
+    IncGoRef;
+  local:
+    *;
+};
