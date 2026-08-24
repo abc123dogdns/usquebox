@@ -2,4 +2,4 @@
 # Pin to a specific commit, tag, or branch from the remote repo.
 # Update this file to bump the usque version used in builds.
 USQUE_REPO=https://github.com/justinwoo280/usque.git
-USQUE_REF=7822d6ae244d55f023899f70063d03dd6e58c248
+USQUE_REF=db42acb8ee902daba516e765321aa279a57fc2db
