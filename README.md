@@ -39,6 +39,14 @@ This will:
 ./gradlew assembleDebug   # Or assembleRelease with signing
 ```
 
+APK builds compress native libraries by default, which substantially reduces
+the distributable size of the Go runtime. To build with page-aligned,
+uncompressed `.so` files instead, use:
+
+```bash
+./gradlew assembleRelease -PcompressNativeLibs=false
+```
+
 ### Signing
 
 Create `keystore.properties` for signed release builds:

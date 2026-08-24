@@ -15,6 +15,10 @@ fun signEnv(key: String): String =
     keystoreProps.getProperty(key) ?: System.getenv(key) ?: ""
 
 val hasSigning = signEnv("KEYSTORE_BASE64").isNotBlank() || signEnv("KEYSTORE_FILE").isNotBlank()
+val compressNativeLibs = providers.gradleProperty("compressNativeLibs")
+    .map(String::toBoolean)
+    .orElse(true)
+    .get()
 
 android {
     namespace = "com.usquebox"
@@ -72,7 +76,10 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging = false
+            // Compress Go's native library in the APK. Android extracts it
+            // before loading, while the uncompressed mode remains available
+            // for diagnostics and compatibility testing.
+            useLegacyPackaging = compressNativeLibs
         }
     }
 
